@@ -1,0 +1,252 @@
+name: Build and Push Wan2.2 to AWS ECR
+
+# Custom run name for easy identification
+run-name: "Build and Push Wan2.2 - ${{ inputs.environment }}"
+
+# Required GitHub Secrets:
+# - AWS_ACCESS_KEY_ID: AWS access key for ECR access
+# - AWS_SECRET_ACCESS_KEY: AWS secret key for ECR access
+# - DISCORD_WEBHOOK_URL: Discord webhook URL for build notifications (optional)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to build for"
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+
+env:
+  ECR_REPOSITORY: wan22
+
+jobs:
+  determine-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      aws_region: ${{ steps.set-env.outputs.aws_region }}
+    steps:
+      - name: Determine environment
+        id: set-env
+        run: |
+          echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          if [ "${{ github.event.inputs.environment }}" == "prod" ]; then
+            echo "aws_region=us-east-1" >> $GITHUB_OUTPUT
+          else
+            echo "aws_region=us-east-2" >> $GITHUB_OUTPUT
+          fi
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: determine-environment
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Discord - Init
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          sudo apt install -y jq curl sed git gawk
+          export TMPDIR=${GITHUB_WORKSPACE}/.tmp
+          mkdir -p ${TMPDIR}
+
+          BUILD_START_TIME=$(date +%s)
+          echo "TMPDIR=${TMPDIR}" >> $GITHUB_ENV
+          echo "BUILD_START_TIME=${BUILD_START_TIME}" >> $GITHUB_ENV
+          echo "${BUILD_START_TIME}" > ${TMPDIR}/build_start_time.txt
+          echo "DISCORD_MESSAGE_KEY=build" >> $GITHUB_ENV
+          echo "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}" >> $GITHUB_ENV
+          echo "discord_webhook_send=${TMPDIR}/discord_webhook_send.sh" >> $GITHUB_ENV
+          echo "discord_content_file=${TMPDIR}/content.txt" >> $GITHUB_ENV
+          echo "timed_sh=${TMPDIR}/timed.sh" >> $GITHUB_ENV
+
+      - name: Discord - Start
+        run: |
+          curl -s https://gist.githubusercontent.com/fbzhong/f8e56314decb04e36563c25b2edf8eb2/raw/ > ${timed_sh}
+          chmod +x ${timed_sh} || true
+          curl -s https://gist.githubusercontent.com/fbzhong/0ba6e521e657c2ec6da472cd5d16ccf5/raw/ > ${discord_webhook_send}
+          chmod +x ${discord_webhook_send} || true
+          echo "# 🚀 **Building Wan2.2 Docker Image · Run #${{ github.run_number }}**" > ${discord_content_file}
+          echo "" >> ${discord_content_file}
+          echo "**Environment:** \`${{ needs.determine-environment.outputs.environment }}\`" >> ${discord_content_file}
+          echo "**Triggered by:** @${{ github.actor }}" >> ${discord_content_file}
+          echo "**Launched at** <t:${BUILD_START_TIME}:R>" >> ${discord_content_file}
+          echo "**Check the full details here:** [${GITHUB_REPOSITORY}-run-${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> ${discord_content_file}
+          ${discord_webhook_send} ${discord_content_file} || true
+
+      - name: Discord - Git Details
+        run: |
+          echo "" >> ${discord_content_file}
+          echo "**🔗 Git Details:**" >> ${discord_content_file}
+          echo "- 🆔 **Commit ID:** \`$(git rev-parse --short HEAD)\`" >> ${discord_content_file}
+          echo "- 💬 **Message:** \`$(git log -1 --pretty=format:'%s' | awk '{ if (length > 64) print substr($0,1,64) "..."; else print; }')\`" >> ${discord_content_file}
+          echo "- 👤 **Author:** \`$(git log -1 --pretty=format:'%an <%ae>')\`" >> ${discord_content_file}
+          echo "- 🌐 **GitHub:** [Open In Browser]($(git remote get-url origin | sed -e 's/^git@\(.*\):\(.*\)\.git$/https:\/\/\1\/\2/' -e 's/^https:\/\/\(.*\)\.git$/https:\/\/\1/')/commit/$(git rev-parse HEAD))" >> ${discord_content_file}
+          echo "" >> ${discord_content_file}
+          ${discord_webhook_send} ${discord_content_file} || true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ needs.determine-environment.outputs.aws_region }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create ECR Repository if not exists
+        run: |
+          aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }}-${{ needs.determine-environment.outputs.environment }} --region ${{ needs.determine-environment.outputs.aws_region }} || \
+          aws ecr create-repository \
+            --repository-name ${{ env.ECR_REPOSITORY }}-${{ needs.determine-environment.outputs.environment }} \
+            --region ${{ needs.determine-environment.outputs.aws_region }} \
+            --image-scanning-configuration scanOnPush=true \
+            --image-tag-mutability MUTABLE
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract git information for build
+        id: git-info
+        run: |
+          echo "git_commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "git_clean=" >> $GITHUB_OUTPUT
+          echo "git_commit_date=$(TZ=UTC0 git log -1 --date=local --format='%cd')" >> $GITHUB_OUTPUT
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}-${{ needs.determine-environment.outputs.environment }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ github.sha }}
+
+      - name: Discord - Build Start
+        run: |
+          source ${timed_sh}
+          echo "**🚀 Build Steps:**" >> ${discord_content_file}
+          echo "- **🐳 Building and pushing Docker image...**" >> ${discord_content_file}
+          ${discord_webhook_send} ${discord_content_file} || true
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            GIT_COMMIT=${{ steps.git-info.outputs.git_commit }}
+            GIT_CLEAN=${{ steps.git-info.outputs.git_clean }}
+            GIT_COMMIT_DATE=${{ steps.git-info.outputs.git_commit_date }}
+
+      - name: Discord - Build Complete
+        run: |
+          sed -i '$d' ${discord_content_file}
+          echo "- 🐳 Docker image built and pushed: \`${{ github.sha }}\`" >> ${discord_content_file}
+          ${discord_webhook_send} ${discord_content_file} || true
+
+      - name: Discord - Build Success
+        run: |
+          # Calculate build time
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - BUILD_START_TIME))
+          MINUTES=$((DURATION / 60))
+          SECONDS=$((DURATION % 60))
+
+          if [ $MINUTES -gt 0 ]; then
+            BUILD_TIME="${MINUTES}m ${SECONDS}s"
+          else
+            BUILD_TIME="${SECONDS}s"
+          fi
+
+          ECR_IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}-${{ needs.determine-environment.outputs.environment }}:${{ github.sha }}"
+
+          echo "" >> ${discord_content_file}
+          echo "- ✅ **Build completed successfully!**" >> ${discord_content_file}
+          echo "" >> ${discord_content_file}
+          echo "**📦 Docker Image:**" >> ${discord_content_file}
+          echo "\`\`\`" >> ${discord_content_file}
+          echo "${ECR_IMAGE_URI}" >> ${discord_content_file}
+          echo "\`\`\`" >> ${discord_content_file}
+          echo "" >> ${discord_content_file}
+          echo "**📋 Pull command:**" >> ${discord_content_file}
+          echo "\`\`\`bash" >> ${discord_content_file}
+          echo "docker pull ${ECR_IMAGE_URI}" >> ${discord_content_file}
+          echo "\`\`\`" >> ${discord_content_file}
+          echo "" >> ${discord_content_file}
+          echo "- ⏱️ **Total build time:** ${BUILD_TIME}" >> ${discord_content_file}
+          ${discord_webhook_send} ${discord_content_file} || true
+
+      - name: Build Summary
+        run: |
+          ECR_IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}-${{ needs.determine-environment.outputs.environment }}:${{ github.sha }}"
+
+          echo "# Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ needs.determine-environment.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **AWS Region**: ${{ needs.determine-environment.outputs.aws_region }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ECR Repository**: ${{ env.ECR_REPOSITORY }}-${{ needs.determine-environment.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Docker Image" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${ECR_IMAGE_URI}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Pull Command" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${ECR_IMAGE_URI}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  notify-failure:
+    runs-on: ubuntu-latest
+    needs: [determine-environment, build-and-push]
+    if: ${{ always() && (failure() || cancelled()) }}
+    steps:
+      - name: Discord - Init
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          sudo apt install -y jq curl sed git gawk
+          export TMPDIR=${GITHUB_WORKSPACE}/.tmp
+          mkdir -p ${TMPDIR}
+
+          echo "TMPDIR=${TMPDIR}" >> $GITHUB_ENV
+          echo "BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+          echo "DISCORD_MESSAGE_KEY=build" >> $GITHUB_ENV
+          echo "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}" >> $GITHUB_ENV
+          echo "discord_webhook_send=${TMPDIR}/discord_webhook_send.sh" >> $GITHUB_ENV
+          echo "discord_content_file=${TMPDIR}/content.txt" >> $GITHUB_ENV
+          echo "timed_sh=${TMPDIR}/timed.sh" >> $GITHUB_ENV
+
+      - name: Notify Discord on Failure
+        run: |
+          curl -s https://gist.githubusercontent.com/fbzhong/f8e56314decb04e36563c25b2edf8eb2/raw/ > ${timed_sh}
+          chmod +x ${timed_sh} || true
+          curl -s https://gist.githubusercontent.com/fbzhong/0ba6e521e657c2ec6da472cd5d16ccf5/raw/ > ${discord_webhook_send}
+          chmod +x ${discord_webhook_send} || true
+
+          echo "# ❌ **Building Wan2.2 Docker Image · Run #${{ github.run_number }} Failed**" > ${discord_content_file}
+          echo "" >> ${discord_content_file}
+          echo "**Environment:** \`${{ needs.determine-environment.outputs.environment }}\`" >> ${discord_content_file}
+          echo "" >> ${discord_content_file}
+          echo "**Check the full details here:** [${GITHUB_REPOSITORY}-run-${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> ${discord_content_file}
+          echo "" >> ${discord_content_file}
+          ${discord_webhook_send} ${discord_content_file} || true
