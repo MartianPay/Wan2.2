@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  wan22:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wan22:latest
+    container_name: wan22-gpu
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - DASH_API_KEY=${DASHSCOPE_API_KEY}
+    volumes:
+      - ./:/workspace
+      - /mnt/efs/models:/mnt/efs/models  # Mount your model directory
+      - ./outputs:/workspace/outputs
+    shm_size: '16gb'  # Increase shared memory for PyTorch
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
