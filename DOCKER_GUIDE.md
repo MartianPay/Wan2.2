@@ -695,13 +695,126 @@ torchrun --nproc_per_node=8 generate.py \
 
 > **Note:** Prices are approximate US East (N. Virginia) on-demand rates as of 2025. Use Spot Instances for 60-70% cost savings.
 
+### Detailed Cost Breakdown
+
+**Complete AWS Instance Pricing (US East - N. Virginia, as of 2025)**
+
+#### Single GPU Instances
+
+| Instance Type | vCPUs | RAM | GPU | VRAM | On-Demand $/hr | Spot $/hr* | Best For |
+|--------------|-------|-----|-----|------|----------------|------------|----------|
+| `g6.xlarge` | 4 | 16GB | 1x L4 | 24GB | $0.78 | ~$0.25 | Budget TI2V-5B |
+| `g5.xlarge` | 4 | 16GB | 1x A10G | 24GB | $1.01 | ~$0.30 | TI2V-5B |
+| `g5.2xlarge` | 8 | 32GB | 1x A10G | 24GB | $1.21 | ~$0.36 | TI2V-5B faster |
+| `g5.4xlarge` | 16 | 64GB | 1x A10G | 24GB | $1.62 | ~$0.49 | TI2V-5B + extras |
+| `p3.2xlarge` | 8 | 61GB | 1x V100 | 16GB | $3.06 | ~$0.92 | Legacy option |
+| `g5.12xlarge` | 48 | 192GB | 4x A10G | 96GB | $5.67 | ~$1.70 | Multi-GPU TI2V-5B |
+
+#### High-Memory Single GPU (80GB VRAM)
+
+| Instance Type | vCPUs | RAM | GPU | VRAM | On-Demand $/hr | Spot $/hr* | Best For |
+|--------------|-------|-----|-----|------|----------------|------------|----------|
+| `p4de.24xlarge` | 96 | 1152GB | 8x A100 | 8x 80GB | $40.97 | ~$12.29 | Single A14B (use 1 GPU) |
+| `p5.48xlarge` | 192 | 2048GB | 8x H100 | 8x 80GB | $98.32 | ~$29.50 | Premium single A14B |
+
+#### Multi-GPU Instances (4-8 GPUs)
+
+| Instance Type | vCPUs | RAM | GPU Config | Total VRAM | On-Demand $/hr | Spot $/hr* | Best For |
+|--------------|-------|-----|-----------|------------|----------------|------------|----------|
+| `g5.12xlarge` | 48 | 192GB | 4x A10G | 96GB | $5.67 | ~$1.70 | 4-GPU TI2V-5B |
+| `g5.48xlarge` | 192 | 768GB | 8x A10G | 192GB | $16.29 | ~$4.89 | 8-GPU TI2V-5B or budget A14B |
+| `p3.8xlarge` | 32 | 244GB | 4x V100 | 64GB | $12.24 | ~$3.67 | 4-GPU 480P A14B |
+| `p3.16xlarge` | 64 | 488GB | 8x V100 | 128GB | $24.48 | ~$7.34 | 8-GPU 480P A14B |
+| `p4d.24xlarge` | 96 | 1152GB | 8x A100 | 320GB | $32.77 | ~$9.83 | **Best for A14B models** |
+| `p5.48xlarge` | 192 | 2048GB | 8x H100 | 640GB | $98.32 | ~$29.50 | Fastest option |
+
+> **\*Spot pricing** varies by region and demand. Prices shown are typical discounts (70% off on-demand).
+
+#### Cost Per Video Generation Estimates
+
+Based on typical generation times (720P, 5-second video):
+
+| Model | Instance Type | Generation Time | On-Demand Cost | Spot Cost | GPUs Used |
+|-------|--------------|-----------------|----------------|-----------|-----------|
+| TI2V-5B | `g5.xlarge` | ~9 min | $0.15 | $0.05 | 1 |
+| TI2V-5B | `g5.12xlarge` (4 GPU) | ~3 min | $0.28 | $0.09 | 4 |
+| TI2V-5B | `g5.48xlarge` (8 GPU) | ~2 min | $0.54 | $0.16 | 8 |
+| T2V-A14B | `p4de.24xlarge` (1 GPU) | ~15 min | $10.24 | $3.07 | 1 |
+| T2V-A14B | `p4d.24xlarge` (4 GPU) | ~4 min | $2.18 | $0.65 | 4 |
+| T2V-A14B | `p4d.24xlarge` (8 GPU) | ~2.5 min | $1.36 | $0.41 | 8 |
+| I2V-A14B | `p4d.24xlarge` (8 GPU) | ~3 min | $1.64 | $0.49 | 8 |
+| S2V-14B | `p4d.24xlarge` (8 GPU) | ~5 min* | $2.73 | $0.82 | 8 |
+
+> **\*S2V generation time** varies based on audio length and `--num_clip` parameter.
+
+#### Regional Pricing Comparison
+
+On-demand hourly rates for `p4d.24xlarge` (8x A100 40GB):
+
+| Region | Price/hr | vs US East |
+|--------|----------|------------|
+| US East (N. Virginia) | $32.77 | Baseline |
+| US West (Oregon) | $32.77 | Same |
+| EU (Ireland) | $36.05 | +10% |
+| EU (Frankfurt) | $38.90 | +19% |
+| Asia Pacific (Tokyo) | $42.36 | +29% |
+| Asia Pacific (Seoul) | $39.33 | +20% |
+| Asia Pacific (Singapore) | $42.36 | +29% |
+
+On-demand hourly rates for `g5.xlarge` (1x A10G 24GB):
+
+| Region | Price/hr | vs US East |
+|--------|----------|------------|
+| US East (N. Virginia) | $1.01 | Baseline |
+| US West (Oregon) | $1.01 | Same |
+| EU (Ireland) | $1.11 | +10% |
+| EU (Frankfurt) | $1.20 | +19% |
+| Asia Pacific (Tokyo) | $1.31 | +30% |
+| Asia Pacific (Seoul) | $1.21 | +20% |
+
 ### Cost Optimization Tips
 
 1. **Use Spot Instances:** Save 60-70% on compute costs
+   - Set max spot price to 50% of on-demand to avoid price spikes
+   - Use spot instance interruption handling (save checkpoints)
+   - Combine with EFS for seamless failover
 2. **Start with TI2V-5B:** Most cost-effective, runs on 24GB GPUs
-3. **Use EFS for models:** Share model weights across instances
-4. **Batch generation:** Generate multiple videos per session
-5. **Test on 480P first:** Use lower resolution for prompt/parameter testing
+   - $0.05 per video on spot instances
+   - Can run on consumer-grade GPUs (RTX 4090 equivalent)
+3. **Choose the right GPU count:**
+   - Single GPU: Best for occasional use, development
+   - 4 GPUs: Balanced cost/speed for production
+   - 8 GPUs: Maximum speed, higher cost per video
+4. **Use EFS for models:** Share model weights across instances
+   - One-time download, reuse across multiple instances
+   - Faster instance startup time
+5. **Batch generation:** Generate multiple videos per session
+   - Amortize model loading time (~2-3 minutes)
+   - Best ROI when generating 5+ videos per session
+6. **Test on 480P first:** Use lower resolution for prompt/parameter testing
+   - 480P generation is ~60% faster than 720P
+   - Use for iteration, then switch to 720P for final output
+7. **Regional selection:**
+   - US East/West typically cheapest
+   - Consider data egress costs if downloading videos
+   - Latency matters less for batch processing
+8. **Reserve instances for sustained use:**
+   - 1-year commitment: ~40% savings
+   - 3-year commitment: ~60% savings
+   - Only worthwhile if running 24/7 production workloads
+
+### Monthly Cost Estimates (Production Workloads)
+
+Assuming 1000 videos/month (720P, 5-second):
+
+| Model | Instance Strategy | Total Cost (On-Demand) | Total Cost (Spot) |
+|-------|------------------|------------------------|-------------------|
+| TI2V-5B | `g5.xlarge` (single GPU) | $150 | $50 |
+| TI2V-5B | `g5.12xlarge` (4 GPU) | $280 | $90 |
+| T2V-A14B | `p4d.24xlarge` (4 GPU) | $2,180 | $650 |
+| T2V-A14B | `p4d.24xlarge` (8 GPU) | $1,360 | $410 |
+
+> **Break-even analysis:** For TI2V-5B at 1000 videos/month, spot instances pay for themselves. For A14B models, 8-GPU spot instances are most cost-effective at scale.
 
 ## Getting Started Checklist
 
