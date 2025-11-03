@@ -10,6 +10,7 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128,roundup_power2_divisions:16
       - DASH_API_KEY=${DASHSCOPE_API_KEY}
     volumes:
       - ./:/workspace

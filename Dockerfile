@@ -6,9 +6,11 @@ FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    CUDA_HOME=/usr/local/cuda
+    CUDA_HOME=/usr/local/cuda \
+    PIP_NO_CACHE_DIR=1 \
+    TMPDIR=/workspace/tmp
 
-# Install system dependencies
+# Install system dependencies and clean up in one layer
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3-pip \
@@ -20,43 +22,59 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set python3.10 as default python
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 && \
-    update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
-
-# Upgrade pip
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 \
+    && update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1 \
+    && pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /tmp/* \
+    && rm -rf /root/.cache
 
 # Set working directory
 WORKDIR /workspace
 
+# Create tmp directory for pip/build operations
+RUN mkdir -p /workspace/tmp
+
 # Copy requirements files
 COPY requirements.txt requirements_s2v.txt requirements_animate.txt ./
 
-# Install PyTorch first (required for flash_attn build)
+# Install PyTorch first (required for flash_attn build) and clean up
 RUN pip install --no-cache-dir \
     torch>=2.4.0 \
     torchvision>=0.19.0 \
     torchaudio \
-    --index-url https://download.pytorch.org/whl/cu121
+    --index-url https://download.pytorch.org/whl/cu121 \
+    && rm -rf /root/.cache/pip/* \
+    && rm -rf /tmp/* \
+    && find / -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-# Install flash_attn build dependencies
-RUN pip install --no-cache-dir psutil packaging ninja wheel
+# Install flash_attn dependencies, build flash_attn, and install other requirements
+RUN pip install --no-cache-dir psutil packaging ninja wheel \
+    && grep -v "flash_attn" requirements.txt > requirements_no_flash.txt \
+    && pip install --no-cache-dir -r requirements_no_flash.txt \
+    && pip install --no-cache-dir flash-attn --no-build-isolation --no-binary flash-attn \
+    && rm -rf /root/.cache/pip/* \
+    && rm -rf /tmp/* \
+    && rm requirements_no_flash.txt \
+    && find / -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-# Install other dependencies (excluding flash_attn)
-RUN grep -v "flash_attn" requirements.txt > requirements_no_flash.txt && \
-    pip install --no-cache-dir -r requirements_no_flash.txt
+# Install S2V requirements and clean up
+RUN pip install --no-cache-dir -r requirements_s2v.txt \
+    && rm -rf /root/.cache/pip/* \
+    && rm -rf /tmp/* \
+    && find / -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-# Install flash_attn from source (builds against system GLIBC)
-RUN pip install --no-cache-dir flash-attn --no-build-isolation --no-binary flash-attn
+# Install Animate requirements (includes SAM-2) with aggressive cleanup
+RUN pip install --no-cache-dir -r requirements_animate.txt \
+    && rm -rf /root/.cache/pip/* \
+    && rm -rf /tmp/* \
+    && rm -rf /root/.cache/* \
+    && find / -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
+    && find / -type f -name "*.pyc" -delete 2>/dev/null || true \
+    && find / -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
 
-# Install S2V requirements (includes decord and other S2V dependencies)
-RUN pip install --no-cache-dir -r requirements_s2v.txt
-
-# Install Animate requirements (includes peft and other Animate dependencies)
-RUN pip install --no-cache-dir -r requirements_animate.txt
+RUN pip install peft
 
 # Copy the project code
 COPY . .

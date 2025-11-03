@@ -142,6 +142,8 @@ jobs:
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
+        env:
+          TMPDIR: ${{ github.workspace }}/tmp
         with:
           context: .
           file: ./Dockerfile
@@ -155,6 +157,7 @@ jobs:
             GIT_COMMIT=${{ steps.git-info.outputs.git_commit }}
             GIT_CLEAN=${{ steps.git-info.outputs.git_clean }}
             GIT_COMMIT_DATE=${{ steps.git-info.outputs.git_commit_date }}
+            TMPDIR=/workspace/tmp
 
       - name: Discord - Build Complete
         run: |
