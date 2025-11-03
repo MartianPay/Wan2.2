@@ -52,11 +52,11 @@ RUN grep -v "flash_attn" requirements.txt > requirements_no_flash.txt && \
 # Install flash_attn from source (builds against system GLIBC)
 RUN pip install --no-cache-dir flash-attn --no-build-isolation --no-binary flash-attn
 
-# Optional: Install S2V requirements (uncomment if needed)
-# RUN pip install --no-cache-dir -r requirements_s2v.txt
+# Install S2V requirements (includes decord and other S2V dependencies)
+RUN pip install --no-cache-dir -r requirements_s2v.txt
 
-# Optional: Install Animate requirements (uncomment if needed)
-# RUN pip install --no-cache-dir -r requirements_animate.txt
+# Install Animate requirements (includes peft and other Animate dependencies)
+RUN pip install --no-cache-dir -r requirements_animate.txt
 
 # Copy the project code
 COPY . .
