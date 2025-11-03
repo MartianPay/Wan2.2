@@ -1,0 +1,319 @@
+# Kubernetes 部署配置
+# 包含: Redis, API Server, GPU Workers
+
+---
+# Redis Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: wan22
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+      volumes:
+      - name: redis-data
+        emptyDir: {}
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: wan22
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+  type: ClusterIP
+
+---
+# API Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: wan22
+spec:
+  replicas: 2  # 2个 API Server 实例
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      containers:
+      - name: api-server
+        image: 268032756104.dkr.ecr.us-east-2.amazonaws.com/wan22-dev:latest
+        command: ["python", "/workspace/cluster/api_server.py"]
+        ports:
+        - containerPort: 8000
+        env:
+        - name: REDIS_HOST
+          value: "redis.wan22.svc.cluster.local"
+        - name: REDIS_PORT
+          value: "6379"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+
+---
+# API Server Service (LoadBalancer)
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-server
+  namespace: wan22
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+spec:
+  selector:
+    app: api-server
+  ports:
+  - port: 80
+    targetPort: 8000
+  type: LoadBalancer
+
+---
+# GPU Worker Deployment - TI2V-5B (24GB GPU)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-ti2v-5b
+  namespace: wan22
+spec:
+  replicas: 3  # 3个 Worker
+  selector:
+    matchLabels:
+      app: worker-ti2v-5b
+  template:
+    metadata:
+      labels:
+        app: worker-ti2v-5b
+    spec:
+      containers:
+      - name: worker
+        image: 268032756104.dkr.ecr.us-east-2.amazonaws.com/wan22-dev:latest
+        command:
+        - "python"
+        - "/workspace/cluster/gpu_worker.py"
+        - "--redis-host"
+        - "redis.wan22.svc.cluster.local"
+        - "--task-types"
+        - "ti2v-5B"
+        env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True,max_split_size_mb:128"
+        - name: S3_BUCKET
+          value: "martianpay-terraform-state"
+        - name: AWS_REGION
+          value: "us-east-2"
+        resources:
+          limits:
+            nvidia.com/gpu: 1  # 每个 Pod 1个 GPU
+            memory: "32Gi"
+            cpu: "8"
+          requests:
+            nvidia.com/gpu: 1
+            memory: "16Gi"
+            cpu: "4"
+        volumeMounts:
+        - name: efs-models
+          mountPath: /mnt/efs/models
+          readOnly: true
+        - name: shared-memory
+          mountPath: /dev/shm
+      volumes:
+      - name: efs-models
+        persistentVolumeClaim:
+          claimName: efs-models-pvc
+      - name: shared-memory
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
+      nodeSelector:
+        gpu-type: "a10g"  # 指定 GPU 类型
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+---
+# GPU Worker Deployment - T2V/I2V-A14B (40GB+ GPU)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-a14b
+  namespace: wan22
+spec:
+  replicas: 2  # 2个 Worker (A100更贵)
+  selector:
+    matchLabels:
+      app: worker-a14b
+  template:
+    metadata:
+      labels:
+        app: worker-a14b
+    spec:
+      containers:
+      - name: worker
+        image: 268032756104.dkr.ecr.us-east-2.amazonaws.com/wan22-dev:latest
+        command:
+        - "python"
+        - "/workspace/cluster/gpu_worker.py"
+        - "--redis-host"
+        - "redis.wan22.svc.cluster.local"
+        - "--task-types"
+        - "t2v-A14B"
+        - "i2v-A14B"
+        env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True,max_split_size_mb:128"
+        - name: S3_BUCKET
+          value: "martianpay-terraform-state"
+        - name: AWS_REGION
+          value: "us-east-2"
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: "64Gi"
+            cpu: "16"
+          requests:
+            nvidia.com/gpu: 1
+            memory: "32Gi"
+            cpu: "8"
+        volumeMounts:
+        - name: efs-models
+          mountPath: /mnt/efs/models
+          readOnly: true
+        - name: shared-memory
+          mountPath: /dev/shm
+      volumes:
+      - name: efs-models
+        persistentVolumeClaim:
+          claimName: efs-models-pvc
+      - name: shared-memory
+        emptyDir:
+          medium: Memory
+          sizeLimit: 24Gi
+      nodeSelector:
+        gpu-type: "a100"  # 指定 A100 GPU
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+---
+# EFS PersistentVolume (模型共享)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: efs-models
+spec:
+  capacity:
+    storage: 1Ti
+  volumeMode: Filesystem
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: efs-sc
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: fs-xxxxx  # 替换为您的 EFS ID
+    volumeAttributes:
+      path: /models
+
+---
+# EFS PersistentVolumeClaim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: efs-models-pvc
+  namespace: wan22
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 1Ti
+
+---
+# Horizontal Pod Autoscaler - 根据队列长度自动扩缩容
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker-ti2v-5b-hpa
+  namespace: wan22
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker-ti2v-5b
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: External
+    external:
+      metric:
+        name: redis_queue_length
+        selector:
+          matchLabels:
+            queue: "ti2v-5B"
+      target:
+        type: AverageValue
+        averageValue: "5"  # 每个 worker 处理 5个任务
+
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wan22
